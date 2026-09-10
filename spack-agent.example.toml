@@ -1,0 +1,55 @@
+[workspace]
+# Local checkout of the project whose source/build system is being packaged.
+source_repository = "/path/to/project-source"
+
+# Writable clone of https://github.com/spack/spack-packages. This is not the
+# Spack installation; it is the checkout where recipe changes are made.
+writable_repository = "/path/to/spack-packages"
+
+# Standard package-repository root in an official spack/spack-packages clone.
+# Leave unchanged unless the checkout uses a nonstandard repository layout.
+spack_repository = "repos/spack_repo/builtin"
+
+# Recipe path relative to spack_repository.
+recipe_path = "packages/example/package.py"
+
+# Required only for runner.backend = "host". Omit for Podman runs, which use
+# the image-local /opt/spack/bin/spack.
+# host_spack_executable = "/path/to/spack/bin/spack"
+
+[goal]
+# Exact root spec that the runner preflights and the generated script installs.
+spec = "example@1.0"
+
+# Add only package-specific goals or review feedback here. spack-agent always
+# supplies the general recipe-editing and final-verification requirements.
+context = """
+Describe the package-specific issue or requested change.
+"""
+
+[runner]
+# "podman" runs isolated ephemeral containers; "host" runs directly locally.
+backend = "podman"
+poll_seconds = 20
+max_iterations = 5
+# Available options: "gcc", "clang", "intel". The selected toolchain determines the
+# builder image and its separate persistent install volume.
+toolchain = "gcc"
+
+# Optional: disable network access after required sources are cached.
+# network = "none"
+# Optional named Podman volume that retains downloaded source archives.
+# download_volume = "spack-agent-downloads"
+
+[agent]
+model = "gpt-5.6-sol"
+agent_timeout_seconds = 900
+allow_tools = ["write", "shell"]
+deny_tools = [
+  "shell(git push*)",
+  "shell(git reset*)",
+  "shell(git clean*)",
+  "shell(rm*)",
+]
+allow_all_paths = false
+allow_all_urls = false

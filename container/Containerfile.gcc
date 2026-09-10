@@ -1,0 +1,52 @@
+FROM ubuntu:24.04
+
+ARG DEBIAN_FRONTEND=noninteractive
+ARG SPACK_REF=47173cd6afeac2823fd61ade3b639de79d9dabfc
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        ca-certificates \
+        cmake \
+        curl \
+        file \
+        gfortran \
+        git \
+        ninja-build \
+        patch \
+        pkg-config \
+        python3 \
+        python3-venv \
+        unzip \
+        xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN git init /opt/spack \
+    && git -C /opt/spack remote add origin https://github.com/spack/spack.git \
+    && git -C /opt/spack fetch --depth 1 origin "$SPACK_REF" \
+    && git -C /opt/spack checkout --detach FETCH_HEAD
+
+ENV PATH="/opt/spack-agent-tools/bin:/opt/spack/bin:${PATH}" \
+    SPACK_ROOT="/opt/spack" \
+    SPACK_USER_CACHE_PATH="/var/cache/spack" \
+    SPACK_USER_CONFIG_PATH="/opt/spack-config"
+
+RUN python3 -m venv /opt/spack-agent-tools \
+    && /opt/spack-agent-tools/bin/pip install --no-cache-dir ruff==0.16.0 \
+    && mkdir -p /opt/spack-config /opt/spack-store /tmp/spack-stage /var/cache/spack \
+    && printf '%s\n' \
+        'config:' \
+        '  install_tree:' \
+        '    root: /opt/spack-store' \
+        '  build_stage:' \
+        '  - /tmp/spack-stage' \
+        '  source_cache: /var/cache/spack/source-cache' \
+        '  misc_cache: /var/cache/spack/misc-cache' \
+        > /opt/spack-config/config.yaml \
+    && spack compiler find --scope=user
+
+COPY --chmod=0755 container/entrypoint.sh /usr/local/bin/spack-agent-entrypoint
+
+WORKDIR /workspace/packages
+ENTRYPOINT ["/usr/local/bin/spack-agent-entrypoint"]
+CMD ["bash"]
