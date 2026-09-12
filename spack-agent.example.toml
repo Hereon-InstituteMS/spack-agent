@@ -19,6 +19,8 @@ recipe_path = "packages/example/package.py"
 
 [goal]
 # Exact root spec that the runner preflights and the generated script installs.
+# Match [runner].toolchain: gcc uses %gcc, clang uses %clang, and intel uses
+# %oneapi.
 spec = "example@1.0"
 
 # Add only package-specific goals or review feedback here. spack-agent always

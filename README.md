@@ -11,10 +11,12 @@ failed verdict starts Copilot again with a bounded excerpt of the real log.
 
 ## Requirements
 
-- Linux or WSL with Python 3.11+, Bash, Git, and `tee`
+- Linux or WSL with Python 3.11+, Bash, and Git
 - The official GitHub Copilot CLI installed and authenticated
-- The target project and its build tools
-- Podman, only when using the optional container runner
+- A writable clone of the target project and `spack/spack-packages`
+- For `runner.backend = "podman"`: Podman
+- For `runner.backend = "host"`: Spack and Ruff available on `PATH`, plus
+	the target project's required build tools
 
 There are no third-party Python dependencies. The Snap Copilot CLI is rejected
 because its AppArmor confinement prevents access to project and Spack paths.
@@ -200,7 +202,7 @@ toolchain = "gcc" # Available options: "gcc", "clang", "intel"
 cpus = 12
 memory = "32g"
 # Optional: disable network access after required sources are cached.
-network = "none"
+# network = "none"
 # Optional named Podman volume that retains downloaded source archives.
 download_volume = "spack-agent-downloads"
 ```
@@ -219,6 +221,18 @@ repository before running each script. Network access uses Podman's default
 unless `runner.network` is set, for example to `"none"` after sources have
 been cached.
 
+### Offline verification
+
+To verify an install without network access, first run the exact specification
+with Podman's default network so Spack populates the persistent
+`download_volume`. Then set `[runner].network = "none"` in
+`spack-agent.toml` and start a new `spack-agent run`. Do not use `--resume`:
+the changed runner setting is intentionally rejected for a resumed session. A
+fresh run clears only the adjacent `.spack-agent` session state; the named
+download volume remains available. This covers Spack-managed source archives
+only: the recipe and its build system must also avoid downloading dependencies
+during the build.
+
 In Podman mode, Copilot receives only the writable repository, source
 repository, and session-state paths. Host-wide path access and the host Spack
 directory are not granted; verification scripts use `/opt/spack/bin/spack`.
@@ -235,7 +249,10 @@ Inspect or remove external storage with:
 
 ```bash
 podman system df
-podman volume rm spack-agent-downloads spack-agent-store-gcc
+# Remove installed GCC packages but keep downloaded sources for an offline rebuild.
+podman volume rm spack-agent-store-gcc
+# Remove the shared source-download cache when it is no longer needed.
+podman volume rm spack-agent-downloads
 ```
 
 ## Test
