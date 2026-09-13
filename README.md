@@ -223,15 +223,25 @@ been cached.
 
 ### Offline verification
 
-To verify an install without network access, first run the exact specification
-with Podman's default network so Spack populates the persistent
-`download_volume`. Then set `[runner].network = "none"` in
-`spack-agent.toml` and start a new `spack-agent run`. Do not use `--resume`:
-the changed runner setting is intentionally rejected for a resumed session. A
-fresh run clears only the adjacent `.spack-agent` session state; the named
-download volume remains available. This covers Spack-managed source archives
-only: the recipe and its build system must also avoid downloading dependencies
-during the build.
+To prove an install can build without network access:
+
+1. With normal network access, run the exact specification once. This populates
+	the persistent `download_volume` with Spack-managed source archives.
+2. Remove the selected toolchain's install volume, while retaining the download
+	volume. For the GCC toolchain:
+
+	```bash
+	podman volume rm spack-agent-store-gcc
+	```
+
+3. Set `[runner].network = "none"` in `spack-agent.toml` and start a new
+	`spack-agent run`.
+
+Do not use `--resume`: the changed runner setting is intentionally rejected for
+a resumed session. A fresh run clears only the adjacent `.spack-agent` session
+state; the named download volume remains available. This covers Spack-managed
+source archives only: the recipe and its build system must also avoid
+downloading dependencies during the build.
 
 In Podman mode, Copilot receives only the writable repository, source
 repository, and session-state paths. Host-wide path access and the host Spack
@@ -248,6 +258,7 @@ packages are isolated by toolchain.
 Inspect or remove external storage with:
 
 ```bash
+# Show disk space used by Podman images, containers, volumes, and build cache.
 podman system df
 # Remove installed GCC packages but keep downloaded sources for an offline rebuild.
 podman volume rm spack-agent-store-gcc
