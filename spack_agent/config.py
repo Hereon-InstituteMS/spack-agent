@@ -11,7 +11,7 @@ DEFAULT_CONFIG_PATH = Path("spack-agent.toml")
 TOOLCHAINS = {
     "gcc": ("spack-agent-builder:gcc", "spack-agent-store-gcc"),
     "clang": ("spack-agent-builder:clang", "spack-agent-store-clang"),
-    "intel": ("spack-agent-builder:intel", "spack-agent-store-intel"),
+    "oneapi": ("spack-agent-builder:oneapi", "spack-agent-store-oneapi"),
 }
 
 

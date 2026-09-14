@@ -207,11 +207,11 @@ context = "test"
             with self.assertRaisesRegex(ValueError, "required for host runner"):
                 load_config(config_path)
 
-    def test_intel_toolchain_uses_its_own_image_and_store(self):
-        runner = RunnerConfig(toolchain="intel")
+    def test_oneapi_toolchain_uses_its_own_image_and_store(self):
+        runner = RunnerConfig(toolchain="oneapi")
 
-        self.assertEqual(runner.image, "spack-agent-builder:intel")
-        self.assertEqual(runner.install_volume, "spack-agent-store-intel")
+        self.assertEqual(runner.image, "spack-agent-builder:oneapi")
+        self.assertEqual(runner.install_volume, "spack-agent-store-oneapi")
 
     def test_resolves_explicit_spack_path_roles(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -125,7 +125,7 @@ they could send a resumed agent to the wrong repositories. Only one command
 may use a session at a time.
 
 For Podman runs, a missing selected toolchain image is built automatically
-before the agent starts. The first Intel run downloads the large oneAPI base
+before the agent starts. The first Intel oneAPI run downloads the large base
 image and can take several minutes; build progress is streamed to the terminal.
 
 The compile/install/test process has no timeout. `[runner].poll_seconds`
@@ -184,7 +184,7 @@ failure category, signature, causal-log path, and DAG fingerprint.
 On the first `spack-agent run` with `runner.backend = "podman"`, the runner
 automatically builds the selected toolchain image when it is not already
 available. The GCC and Clang images use the supplied definitions;
-`Containerfile.intel` builds the standalone Intel oneAPI image.
+`Containerfile.oneapi` builds the standalone Intel oneAPI image.
 
 The image pins its Spack checkout to a tested commit. Change the
 `SPACK_REF` build argument deliberately when upgrading Spack.
@@ -198,7 +198,7 @@ workspace:
 backend = "podman"
 poll_seconds = 10
 max_iterations = 5
-toolchain = "gcc" # Available options: "gcc", "clang", "intel"
+toolchain = "gcc" # Available options: "gcc", "clang", "oneapi"
 cpus = 12
 memory = "32g"
 # Optional: disable network access after required sources are cached.
@@ -247,10 +247,10 @@ In Podman mode, Copilot receives only the writable repository, source
 repository, and session-state paths. Host-wide path access and the host Spack
 directory are not granted; verification scripts use `/opt/spack/bin/spack`.
 
-Use `toolchain = "gcc"`, `toolchain = "clang"`, or `toolchain = "intel"` to
+Use `toolchain = "gcc"`, `toolchain = "clang"`, or `toolchain = "oneapi"` to
 select a matched image and persistent install volume. The GCC image discovers
 Ubuntu's GCC, G++, and GFortran. `Containerfile.clang` extends it with Ubuntu
-Clang and reruns `spack compiler find`. `Containerfile.intel` is independent
+Clang and reruns `spack compiler find`. `Containerfile.oneapi` is independent
 of the GCC image and uses Intel oneAPI's `icx`, `icpx`, and `ifx` compilers.
 The download volume remains configurable and shared by default; installed
 packages are isolated by toolchain.
