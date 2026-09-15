@@ -34,7 +34,7 @@ Describe the package-specific issue or requested change.
 backend = "podman"
 poll_seconds = 20
 max_iterations = 5
-# Available options: "gcc", "clang", "intel". The selected toolchain determines the
+# Available options: "gcc", "clang", "oneapi". The selected toolchain determines the
 # builder image and its separate persistent install volume.
 toolchain = "gcc"
 
