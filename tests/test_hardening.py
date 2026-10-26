@@ -109,6 +109,27 @@ context = "test"
 
 
 class SessionSafetyTests(unittest.TestCase):
+    def test_success_verdict_cannot_override_failed_verification_gates(self):
+        for gate in ({"build_exit_code": 1}, {"preflight_succeeded": False}):
+            with self.subTest(gate=gate), tempfile.TemporaryDirectory() as temporary:
+                config = make_config(Path(temporary))
+                store = SessionStore(config.state_dir)
+                _, log_path = store.step_paths(1)
+                Path(log_path).write_text(
+                    "=== VERDICT ===\nexit_code=0\ngoal_met=yes\n", encoding="utf-8"
+                )
+                store.save(Session(
+                    goal=config.goal_text,
+                    repo_path=str(config.workspace.writable_repository),
+                    workspace_fingerprint=config.workspace_fingerprint,
+                    step=1,
+                    attempts=[Attempt(step=1, log_path=log_path)],
+                ))
+                with patch.object(workflow, "_ask", return_value=CopilotResult(text="retry")) as ask:
+                    self.assertEqual(workflow.process_result(config, store, **gate), 1)
+                ask.assert_called_once()
+                self.assertFalse(store.load().attempts[0].succeeded)
+
     def test_rejects_workspace_drift_before_processing_log(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -183,6 +204,54 @@ class SessionSafetyTests(unittest.TestCase):
 
 
 class RunnerTests(unittest.TestCase):
+    def test_container_definitions_do_not_use_broad_compiler_discovery(self):
+        container_directory = Path(runner.__file__).resolve().parent.parent / "container"
+        gcc = (container_directory / "Containerfile.gcc").read_text(encoding="utf-8")
+        oneapi = (container_directory / "Containerfile.oneapi").read_text(encoding="utf-8")
+        self.assertIn("/usr/bin/gcc-${GCC_VERSION}", gcc)
+        self.assertIn("/usr/bin/clang-${CLANG_VERSION}", gcc)
+        self.assertIn("for compiler in icx icpx ifx", oneapi)
+        for definition in (gcc, oneapi):
+            self.assertIn("spack compiler find --scope=user /opt/spack-agent-compilers/bin", definition)
+            self.assertIn("test -s /opt/spack-config/packages.yaml", definition)
+        self.assertNotIn("spack compiler find --scope=user\n", gcc + oneapi)
+
+    def test_linux_profile_passes_exact_build_arguments(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            host_config = make_config(Path(temporary))
+            config = AgentConfig(
+                workspace=host_config.workspace,
+                goal_context="test",
+                verification_spec="example %gcc@15",
+                runner=RunnerConfig(backend="podman", toolchain="ubuntu26.04-gcc15"),
+            )
+            with patch.object(runner.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as run:
+                self.assertTrue(runner._build_podman_image(config))
+            command = run.call_args.args[0]
+            self.assertIn("SPACK_REF=v1.2.2", command)
+            self.assertIn("UBUNTU_VERSION=26.04", command)
+            self.assertIn("GCC_VERSION=15", command)
+            self.assertTrue(command[command.index("--file") + 1].endswith("Containerfile.gcc"))
+
+    def test_preflight_fails_when_lint_fails_before_successful_spack(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = make_config(root)
+            tools = root / "tools"
+            tools.mkdir()
+            lint = tools / "ruff"
+            lint.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+            lint.chmod(0o755)
+            spack = config.workspace.host_spack_executable
+            spack.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            spack.chmod(0o755)
+            with patch.dict(os.environ, {"PATH": f"{tools}:{os.environ['PATH']}"}):
+                result = runner.run_preflight(config)
+
+            self.assertFalse(result.succeeded)
+            self.assertIsNone(result.dag_identity)
+            self.assertNotIn("=== CONCRETIZED DAG ===", result.output)
+
     def test_preflight_audits_and_concretizes_configured_spec(self):
         with tempfile.TemporaryDirectory() as temporary:
             host_config = make_config(Path(temporary))
@@ -299,9 +368,39 @@ class RunnerTests(unittest.TestCase):
             )
             with (
                 patch.object(runner, "run_step_script", return_value=1),
+                patch.object(runner, "run_preflight", return_value=runner.PreflightResult("", True, None)),
                 patch.object(runner, "process_result", return_value=2),
             ):
                 self.assertEqual(runner.run_workflow(config, resume=True), 2)
+
+    def test_successful_script_still_passes_post_build_checks_to_result(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            config = make_config(Path(temporary))
+            store = SessionStore(config.state_dir)
+            script_path, log_path = store.step_paths(1)
+            Path(script_path).write_text("true\n", encoding="utf-8")
+            store.save(
+                Session(
+                    goal=config.goal_text,
+                    repo_path=str(config.workspace.writable_repository),
+                    workspace_fingerprint=config.workspace_fingerprint,
+                    step=1,
+                    attempts=[Attempt(step=1, script_path=script_path, log_path=log_path)],
+                )
+            )
+            with (
+                patch.object(runner, "run_step_script", return_value=0),
+                patch.object(
+                    runner, "run_preflight",
+                    return_value=runner.PreflightResult("lint failed", False, None),
+                ) as preflight,
+                patch.object(runner, "process_result", return_value=2) as process_result,
+            ):
+                self.assertEqual(runner.run_workflow(config, resume=True), 2)
+            preflight.assert_called_once_with(config)
+            self.assertEqual(process_result.call_args.kwargs["build_exit_code"], 0)
+            self.assertFalse(process_result.call_args.kwargs["preflight_succeeded"])
+            self.assertEqual(process_result.call_args.kwargs["preflight_output"], "lint failed")
 
     def test_iteration_cap_returns_failure(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -328,6 +427,7 @@ class RunnerTests(unittest.TestCase):
             )
             with (
                 patch.object(runner, "run_step_script", return_value=1),
+                patch.object(runner, "run_preflight", return_value=runner.PreflightResult("", True, None)),
                 patch.object(runner, "process_result", return_value=0),
             ):
                 self.assertEqual(runner.run_workflow(config, resume=True), 2)
@@ -534,10 +634,10 @@ class RunnerTests(unittest.TestCase):
                 f"{config.workspace.writable_repository}:/workspace/packages:rw", command
             )
             self.assertIn("spack-downloads:/var/cache/spack:rw", command)
-            self.assertIn("spack-agent-store-clang:/opt/spack-store:rw", command)
+            self.assertIn(f"{config.runner.install_volume}:/opt/spack-store:rw", command)
             self.assertEqual(
                 command[-3:],
-                ["spack-agent-builder:clang", "bash", "/workspace/state/step_01.sh"],
+                [config.runner.image, "bash", "/workspace/state/step_01.sh"],
             )
 
 

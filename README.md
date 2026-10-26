@@ -6,7 +6,8 @@ whose real verification takes minutes or hours.
 The Copilot agent runs only to inspect and edit the target repository and emit
 a verification script. It exits before that script starts. The runner then
 executes the script with no timeout and prints a heartbeat. A successful
-machine-readable verdict ends the workflow without another model call; a
+machine-readable verdict, zero process exit status, and passing recipe checks
+end the workflow without another model call; a
 failed verdict starts Copilot again with a bounded excerpt of the real log.
 
 ## Requirements
@@ -154,7 +155,9 @@ spack-agent status
 spack-agent reset
 ```
 
-`result` does not reprocess a session that is already marked complete.
+`result` does not reprocess a session that is already marked complete. It imports
+the verdict from the supplied log; it cannot recover the original process exit
+status or rerun the recipe checks. Use `run` for runner-observed verification.
 
 Generated scripts use paths for the configured backend. Do not run a
 Podman-mode script directly with host Bash; use `spack-agent run --resume` so
@@ -168,8 +171,13 @@ exit_code=0
 goal_met=yes
 ```
 
-Both success values are required. Missing or incomplete verdicts are treated
-as failures, and repeated identical failures stop the loop after two attempts.
+Both success values are required. During `run`, the actual script process must
+also exit zero, and post-build Ruff, Python syntax, Spack package audit, and
+concretization checks must all pass. A success verdict cannot override these
+checks. The same checks run before planning to provide diagnostic context, even
+when the recipe is initially missing or invalid. Missing or incomplete verdicts
+are treated as failures, and repeated identical failures stop the loop after
+two attempts.
 The runner provides each planning phase with the immutable verification spec
 and workflow contract; user context cannot weaken the required final install
 and validation behavior.
@@ -183,11 +191,21 @@ failure category, signature, causal-log path, and DAG fingerprint.
 
 On the first `spack-agent run` with `runner.backend = "podman"`, the runner
 automatically builds the selected toolchain image when it is not already
-available. The GCC and Clang images use the supplied definitions;
+available. GCC and Clang profiles use the parameterized `Containerfile.gcc`;
 `Containerfile.oneapi` builds the standalone Intel oneAPI image.
 
-The image pins its Spack checkout to a tested commit. Change the
-`SPACK_REF` build argument deliberately when upgrading Spack.
+`runner.spack_ref` selects the Spack checkout (default: `v1.2.2`). Use a release
+tag or commit SHA for repeatability; a moving branch name does not pin its
+contents. Image and install-volume names use only the profile, for example
+`spack-agent-builder:ubuntu24.04-gcc13` and
+`spack-agent-store-ubuntu24.04-gcc13`. Switching profiles isolates installed
+packages. Changing the profile or Spack reference rejects resuming the previous
+environment. Changing only the Spack reference leaves image and store names
+unchanged. Images are built only when
+missing: changing `spack_ref` does not update an existing image. To apply a new
+reference, remove the selected image (shown by `spack-agent config`) and start
+a new run; the runner rebuilds it. The install store remains shared across
+references unless deliberately removed.
 All builder images include Ruff 0.16.0 for recipe validation.
 
 All runner settings are optional. Add only the overrides needed for a given
@@ -198,7 +216,8 @@ workspace:
 backend = "podman"
 poll_seconds = 10
 max_iterations = 5
-toolchain = "gcc" # Available options: "gcc", "clang", "oneapi"
+toolchain = "ubuntu24.04-gcc13"
+spack_ref = "v1.2.2"
 cpus = 12
 memory = "32g"
 # Optional: disable network access after required sources are cached.
@@ -212,7 +231,11 @@ run verification directly on the host. Every container verification iteration
 uses `podman run --rm`, so its filesystem and build processes are discarded
 afterward. Podman creates the configured named volumes automatically:
 downloads persist at `/var/cache/spack`, and installed packages persist at
-`/opt/spack-store`. Neither volume is stored in the Git checkout.
+`/opt/spack-store`. Neither volume is stored in the Git checkout. This is the
+fast development path: a new session or container does not force dependencies
+to rebuild. The runner does not run an automatic matrix or package-specific
+runtime checks.
+The configured spec controls package verification.
 
 The source repository is mounted read-only at `/workspace/source`; the recipe
 checkout and agent state are mounted at `/workspace/packages` and
@@ -227,11 +250,11 @@ To prove an install can build without network access:
 
 1. With normal network access, run the exact specification once. This populates
 	the persistent `download_volume` with Spack-managed source archives.
-2. Remove the selected toolchain's install volume, while retaining the download
-	volume. For the GCC toolchain:
+2. Run `spack-agent config` to find the selected install volume. Remove that
+	volume, while retaining the download volume. For the default GCC profile:
 
 	```bash
-	podman volume rm spack-agent-store-gcc
+	podman volume rm spack-agent-store-ubuntu24.04-gcc13
 	```
 
 3. Set `[runner].network = "none"` in `spack-agent.toml` and start a new
@@ -247,13 +270,23 @@ In Podman mode, Copilot receives only the writable repository, source
 repository, and session-state paths. Host-wide path access and the host Spack
 directory are not granted; verification scripts use `/opt/spack/bin/spack`.
 
-Use `toolchain = "gcc"`, `toolchain = "clang"`, or `toolchain = "oneapi"` to
-select a matched image and persistent install volume. The GCC image discovers
-Ubuntu's GCC, G++, and GFortran. `Containerfile.clang` extends it with Ubuntu
-Clang and reruns `spack compiler find`. `Containerfile.oneapi` is independent
-of the GCC image and uses Intel oneAPI's `icx`, `icpx`, and `ifx` compilers.
+Select one environment at a time using `runner.toolchain`:
+
+| Profile | Base | Registered compilers |
+| --- | --- | --- |
+| `ubuntu24.04-gcc13` (default) | Ubuntu 24.04 | GCC/G++/GFortran 13 |
+| `ubuntu26.04-gcc15` | Ubuntu 26.04 | GCC/G++/GFortran 15 |
+| `clang` | Ubuntu 24.04 | Clang 18 C/C++, GCC 13 for Fortran/runtime support |
+| `oneapi` | Intel oneAPI 2025.0.1 on Ubuntu 24.04 | `icx`, `icpx`, `ifx` |
+
+Discovery uses only configured executable symlinks, not the full `PATH` or
+external-package discovery. The Clang compiler external does not establish that
+system LLVM development libraries satisfy package requirements. Match the root
+compiler constraint in `goal.spec` to the profile, for example `%gcc@15`,
+`%clang@18`, or `%oneapi`.
 The download volume remains configurable and shared by default; installed
-packages are isolated by toolchain.
+packages are isolated by profile. `spack_ref` applies only
+to Podman builds; the host backend uses the configured host Spack executable.
 
 Inspect or remove external storage with:
 
@@ -261,7 +294,7 @@ Inspect or remove external storage with:
 # Show disk space used by Podman images, containers, volumes, and build cache.
 podman system df
 # Remove installed GCC packages but keep downloaded sources for an offline rebuild.
-podman volume rm spack-agent-store-gcc
+podman volume rm spack-agent-store-ubuntu24.04-gcc13
 # Remove the shared source-download cache when it is no longer needed.
 podman volume rm spack-agent-downloads
 ```

@@ -19,8 +19,8 @@ recipe_path = "packages/example/package.py"
 
 [goal]
 # Exact root spec that the runner preflights and the generated script installs.
-# Match [runner].toolchain: gcc uses %gcc, clang uses %clang, and intel uses
-# %oneapi.
+# Match [runner].toolchain: Ubuntu GCC profiles use %gcc, clang uses %clang,
+# and oneapi uses %oneapi.
 spec = "example@1.0"
 
 # Add only package-specific goals or review feedback here. spack-agent always
@@ -34,9 +34,11 @@ Describe the package-specific issue or requested change.
 backend = "podman"
 poll_seconds = 20
 max_iterations = 5
-# Available options: "gcc", "clang", "oneapi". The selected toolchain determines the
-# builder image and its separate persistent install volume.
-toolchain = "gcc"
+# Profiles: "ubuntu24.04-gcc13", "ubuntu26.04-gcc15", "clang", "oneapi".
+# Each profile has a separate image and install volume.
+toolchain = "ubuntu24.04-gcc13"
+# Used when building a missing image; changing it requires an image rebuild.
+spack_ref = "v1.2.2"
 
 # Optional: disable network access after required sources are cached.
 # network = "none"

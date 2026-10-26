@@ -181,6 +181,16 @@ context = "test"
             config = load_config(config_path)
 
             self.assertIsNone(config.workspace.host_spack_executable)
+            self.assertEqual(config.runner.toolchain, "ubuntu24.04-gcc13")
+            self.assertEqual(config.runner.image, "spack-agent-builder:ubuntu24.04-gcc13")
+            config_path.write_text(
+                config_path.read_text(encoding="utf-8").replace(
+                    'backend = "podman"', 'backend = "podman"\ntoolchain = "gcc"'
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "runner.toolchain"):
+                load_config(config_path)
 
     def test_host_runner_requires_host_spack(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -212,6 +222,35 @@ context = "test"
 
         self.assertEqual(runner.image, "spack-agent-builder:oneapi")
         self.assertEqual(runner.install_volume, "spack-agent-store-oneapi")
+
+    def test_profiles_have_separate_names_but_spack_refs_only_change_session_identity(self):
+        profiles = [
+            RunnerConfig(backend="podman", toolchain="ubuntu24.04-gcc13"),
+            RunnerConfig(backend="podman", toolchain="ubuntu26.04-gcc15"),
+            RunnerConfig(backend="podman", toolchain="ubuntu26.04-gcc15", spack_ref="develop"),
+        ]
+        self.assertEqual(len({profile.image for profile in profiles}), 2)
+        self.assertEqual(len({profile.install_volume for profile in profiles}), 2)
+        self.assertEqual(profiles[1].image, profiles[2].image)
+        self.assertEqual(profiles[1].install_volume, profiles[2].install_volume)
+        self.assertEqual(profiles[0].spack_ref, "v1.2.2")
+        workspace = WorkspaceConfig(
+            writable_repository=Path("/packages"),
+            spack_repository=Path("builtin"),
+            recipe_path=Path("example/package.py"),
+            host_spack_executable=None,
+            source_repository=Path("/source"),
+        )
+        configs = [
+            AgentConfig(
+                workspace=workspace,
+                goal_context="test",
+                verification_spec="example@1.0",
+                runner=profile,
+            )
+            for profile in profiles
+        ]
+        self.assertEqual(len({config.workspace_fingerprint for config in configs}), 3)
 
     def test_resolves_explicit_spack_path_roles(self):
         with tempfile.TemporaryDirectory() as temporary:

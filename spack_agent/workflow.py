@@ -362,6 +362,8 @@ def process_result(
     log_file: str | None = None,
     preflight_output: str = "",
     preflight_dag_identity: str | None = None,
+    build_exit_code: int | None = None,
+    preflight_succeeded: bool | None = None,
 ) -> int:
     session = store.load()
     if session is None or not session.attempts:
@@ -388,11 +390,20 @@ def process_result(
         else log_text
     )
     succeeded, signature = evaluate_log(log_text)
-    if not succeeded and causal_log is not None:
+    gate_category = None
+    if build_exit_code is not None and build_exit_code != 0:
+        succeeded = False
+        if signature is None:
+            signature = f"verification process exited with code {build_exit_code}"
+    elif preflight_succeeded is False:
+        succeeded = False
+        signature = "recipe preflight failed: " + error_signature(preflight_output)
+        gate_category = "preflight"
+    if not succeeded and causal_log is not None and gate_category is None:
         signature = error_signature(causal_text)
         last.causal_log_path = str(causal_log)
     last.error_signature = signature
-    last.failure_category = None if succeeded else failure_category(causal_text)
+    last.failure_category = None if succeeded else gate_category or failure_category(causal_text)
     last.dag_identity = preflight_dag_identity
     last.succeeded = succeeded
     _write_result_artifact(

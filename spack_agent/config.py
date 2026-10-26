@@ -9,9 +9,15 @@ import tomllib
 
 DEFAULT_CONFIG_PATH = Path("spack-agent.toml")
 TOOLCHAINS = {
-    "gcc": ("spack-agent-builder:gcc", "spack-agent-store-gcc"),
     "clang": ("spack-agent-builder:clang", "spack-agent-store-clang"),
     "oneapi": ("spack-agent-builder:oneapi", "spack-agent-store-oneapi"),
+    "ubuntu24.04-gcc13": ("spack-agent-builder:ubuntu24.04-gcc13", "spack-agent-store-ubuntu24.04-gcc13"),
+    "ubuntu26.04-gcc15": ("spack-agent-builder:ubuntu26.04-gcc15", "spack-agent-store-ubuntu26.04-gcc15"),
+}
+LINUX_PROFILES = {
+    "clang": ("24.04", "13", "18"),
+    "ubuntu24.04-gcc13": ("24.04", "13", ""),
+    "ubuntu26.04-gcc15": ("26.04", "15", ""),
 }
 
 
@@ -22,7 +28,8 @@ class RunnerConfig:
     backend: str = "host"
     poll_seconds: float = 10.0
     max_iterations: int = 5
-    toolchain: str = "gcc"
+    toolchain: str = "ubuntu24.04-gcc13"
+    spack_ref: str = "v1.2.2"
     cpus: float | None = None
     memory: str | None = None
     network: str | None = None
@@ -101,6 +108,8 @@ class AgentConfig:
             "runner": {
                 "backend": self.runner.backend,
                 "toolchain": self.runner.toolchain,
+                "image": self.runner.image,
+                "spack_ref": self.runner.spack_ref if self.runner.backend == "podman" else None,
                 "network": self.runner.network,
                 "download_volume": self.runner.download_volume,
             },
@@ -149,6 +158,7 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> AgentConfig:
             "poll_seconds",
             "max_iterations",
             "toolchain",
+            "spack_ref",
             "cpus",
             "memory",
             "network",
@@ -291,6 +301,8 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> AgentConfig:
     ):
         choices = ", ".join(sorted(TOOLCHAINS))
         raise ValueError(f"runner.toolchain must be one of: {choices}")
+    if not isinstance(config.runner.spack_ref, str) or not config.runner.spack_ref.strip():
+        raise ValueError("runner.spack_ref must be a non-empty Git reference")
     if config.runner.memory is not None and (
         not isinstance(config.runner.memory, str) or not config.runner.memory.strip()
     ):
@@ -327,6 +339,8 @@ def describe_config(config: AgentConfig) -> str:
             f"  Maximum iterations  : {config.runner.max_iterations}",
             f"  Toolchain           : {config.runner.toolchain if config.runner.backend == 'podman' else '(not used)'}",
             f"  Runner image        : {config.runner.image if config.runner.backend == 'podman' else '(not used)'}",
+            f"  Spack reference     : {config.runner.spack_ref if config.runner.backend == 'podman' else '(host installation)'}",
+            f"  Install volume      : {config.runner.install_volume if config.runner.backend == 'podman' else '(not used)'}",
             f"  Verification spec   : {config.verification_spec or '(not configured)'}",
             f"  Model               : {config.model or 'Copilot default'}",
         ]

@@ -1,16 +1,21 @@
-FROM ubuntu:24.04
+ARG UBUNTU_VERSION=24.04
+FROM ubuntu:${UBUNTU_VERSION}
 
 ARG DEBIAN_FRONTEND=noninteractive
-ARG SPACK_REF=47173cd6afeac2823fd61ade3b639de79d9dabfc
+ARG SPACK_REF=v1.2.2
+ARG GCC_VERSION=13
+ARG CLANG_VERSION=""
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         build-essential \
+        gcc-${GCC_VERSION} \
+        g++-${GCC_VERSION} \
+        gfortran-${GCC_VERSION} \
         ca-certificates \
         cmake \
         curl \
         file \
-        gfortran \
         git \
         ninja-build \
         patch \
@@ -19,6 +24,9 @@ RUN apt-get update \
         python3-venv \
         unzip \
         xz-utils \
+    && if [ -n "$CLANG_VERSION" ]; then \
+        apt-get install -y --no-install-recommends clang-${CLANG_VERSION} llvm-${CLANG_VERSION}-dev; \
+       fi \
     && rm -rf /var/lib/apt/lists/*
 
 RUN git init /opt/spack \
@@ -43,7 +51,16 @@ RUN python3 -m venv /opt/spack-agent-tools \
         '  source_cache: /var/cache/spack/source-cache' \
         '  misc_cache: /var/cache/spack/misc-cache' \
         > /opt/spack-config/config.yaml \
-    && spack compiler find --scope=user
+    && mkdir -p /opt/spack-agent-compilers/bin \
+    && ln -s /usr/bin/gcc-${GCC_VERSION} /opt/spack-agent-compilers/bin/gcc \
+    && ln -s /usr/bin/g++-${GCC_VERSION} /opt/spack-agent-compilers/bin/g++ \
+    && ln -s /usr/bin/gfortran-${GCC_VERSION} /opt/spack-agent-compilers/bin/gfortran \
+    && if [ -n "$CLANG_VERSION" ]; then \
+        ln -s /usr/bin/clang-${CLANG_VERSION} /opt/spack-agent-compilers/bin/clang; \
+        ln -s /usr/bin/clang++-${CLANG_VERSION} /opt/spack-agent-compilers/bin/clang++; \
+       fi \
+    && spack compiler find --scope=user /opt/spack-agent-compilers/bin \
+    && test -s /opt/spack-config/packages.yaml
 
 COPY --chmod=0755 container/entrypoint.sh /usr/local/bin/spack-agent-entrypoint
 

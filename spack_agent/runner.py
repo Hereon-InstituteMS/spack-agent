@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import time
 
-from .config import AgentConfig
+from .config import AgentConfig, LINUX_PROFILES
 from .session import SessionStore, dag_identity
 from .workflow import (
     process_result,
@@ -49,7 +49,7 @@ def run_preflight(config: AgentConfig) -> PreflightResult:
     package = _package_name(config.verification_spec)
     command_text = "\n".join(
         [
-            "set -o pipefail",
+            "set -euo pipefail",
             f"ruff check {shlex.quote(recipe)}",
             f"python3 -m py_compile {shlex.quote(recipe)}",
             f"{shlex.quote(spack)} audit packages {shlex.quote(package)}",
@@ -137,7 +137,10 @@ def _podman_image_exists(image: str) -> bool:
 
 def _build_podman_image(config: AgentConfig) -> bool:
     """Build the selected image from the bundled toolchain definition."""
-    containerfile = _CONTAINER_DIRECTORY / f"Containerfile.{config.runner.toolchain}"
+    toolchain = config.runner.toolchain
+    containerfile = _CONTAINER_DIRECTORY / (
+        "Containerfile.gcc" if toolchain in LINUX_PROFILES else f"Containerfile.{toolchain}"
+    )
     if not containerfile.is_file():
         print(f"[spack-agent] Toolchain definition not found: {containerfile}")
         return False
@@ -148,8 +151,18 @@ def _build_podman_image(config: AgentConfig) -> bool:
         str(containerfile),
         "--tag",
         config.runner.image,
-        str(_CONTAINER_DIRECTORY.parent),
+        "--build-arg",
+        f"SPACK_REF={config.runner.spack_ref}",
     ]
+    if toolchain in LINUX_PROFILES:
+        ubuntu_version, gcc_version, clang_version = LINUX_PROFILES[toolchain]
+        for name, value in (
+            ("UBUNTU_VERSION", ubuntu_version),
+            ("GCC_VERSION", gcc_version),
+            ("CLANG_VERSION", clang_version),
+        ):
+            command.extend(["--build-arg", f"{name}={value}"])
+    command.append(str(_CONTAINER_DIRECTORY.parent))
     print(
         f"[spack-agent] Podman image not found: {config.runner.image}. "
         f"Building the {config.runner.toolchain} toolchain image now; this may "
@@ -262,12 +275,14 @@ def run_workflow(config: AgentConfig, resume: bool) -> int:
                 f"(exit code {exit_code}); the agent was not restarted."
             )
             return 1
-        preflight = run_preflight(config) if exit_code != 0 else None
+        preflight = run_preflight(config)
         result = process_result(
             config,
             store,
-            preflight_output=preflight.output if preflight else "",
-            preflight_dag_identity=preflight.dag_identity if preflight else None,
+            preflight_output=preflight.output,
+            preflight_dag_identity=preflight.dag_identity,
+            build_exit_code=exit_code,
+            preflight_succeeded=preflight.succeeded,
         )
         if result in {1, 2}:
             show_status(store)

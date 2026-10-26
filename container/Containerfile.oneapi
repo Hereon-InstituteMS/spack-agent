@@ -1,7 +1,7 @@
 FROM docker.io/intel/oneapi-hpckit:2025.0.1-0-devel-ubuntu24.04
 
 ARG DEBIAN_FRONTEND=noninteractive
-ARG SPACK_REF=47173cd6afeac2823fd61ade3b639de79d9dabfc
+ARG SPACK_REF=v1.2.2
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -41,7 +41,9 @@ RUN python3 -m venv /opt/spack-agent-tools \
         '  source_cache: /var/cache/spack/source-cache' \
         '  misc_cache: /var/cache/spack/misc-cache' \
         > /opt/spack-config/config.yaml \
-    && bash -c 'source /opt/intel/oneapi/setvars.sh --force >/dev/null && spack compiler find --scope=user'
+    && mkdir -p /opt/spack-agent-compilers/bin \
+    && bash -ec 'source /opt/intel/oneapi/setvars.sh --force >/dev/null; for compiler in icx icpx ifx; do ln -s "$(command -v "$compiler")" "/opt/spack-agent-compilers/bin/$compiler"; done; spack compiler find --scope=user /opt/spack-agent-compilers/bin' \
+    && test -s /opt/spack-config/packages.yaml
 
 COPY --chmod=0755 container/entrypoint.sh /usr/local/bin/spack-agent-entrypoint
 
