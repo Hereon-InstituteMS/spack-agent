@@ -26,6 +26,16 @@ because its AppArmor confinement prevents access to project and Spack paths.
 
 From this repository:
 
+On Linux or WSL, create and activate a virtual environment first. This avoids
+installing into the OS-managed Python environment:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+Then install the package:
+
 ```bash
 python -m pip install -e .
 spack-agent --help
