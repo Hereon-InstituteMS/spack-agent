@@ -71,7 +71,7 @@ def ask_copilot(
     resume: str | None = None,
     timeout: float,
 ) -> CopilotResult:
-    command = [COPILOT_BIN, "-p", prompt]
+    command = [COPILOT_BIN]
     if model:
         command += ["--model", model]
     for tool in allow_tools:
@@ -90,6 +90,7 @@ def ask_copilot(
     try:
         result = subprocess.run(
             command,
+            input=prompt,
             capture_output=True,
             text=True,
             check=True,
