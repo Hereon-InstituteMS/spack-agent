@@ -39,6 +39,9 @@ We desire a clean commit history. This may require rebasing the commits before m
 ## Documentation
 As this project is still rather small, code is documented directly in the code. Furthermore, the [README.md](README.md) should be kept up to date to help users get spack-agent running. We welcome any improvements to our documentation.
 
+Runner behavior, verification-script requirements, and implementation details
+are documented in the [developer guide](DEVELOPMENT.md).
+
 ## AI-assisted contributions
 Any AI-assisted code must be reviewed, understood, and validated by the contributing author, who takes full responsibility for the contribution. Specifically, contributors must ensure that AI-assisted code:
 * does not introduce third-party code incompatible with the project's [MIT license](LICENSE)

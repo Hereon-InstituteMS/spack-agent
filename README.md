@@ -89,7 +89,7 @@ Describe the package-specific issue or requested change.
 """
 
 [agent]
-model = "gpt-5.6-sol" # optional
+model = "gpt-6.1-sol" # optional
 ```
 
 Paths may be absolute or relative to the configuration file. The loader
@@ -156,46 +156,33 @@ spack-agent run --resume
 The agent receives the previous request, current request, and preserved partial
 log, then writes a new verification script. The interrupted script is not rerun.
 
-`status` displays the current session. To process a completed log from an
-unfinished or interrupted session, use `result`:
+After a run, use `status` to view the saved session and attempt history:
 
 ```bash
-spack-agent result /path/to/completed-build.log
 spack-agent status
-spack-agent reset
 ```
 
-`result` does not reprocess a session that is already marked complete. It imports
-the verdict from the supplied log; it cannot recover the original process exit
-status or rerun the recipe checks. Use `run` for runner-observed verification.
+> **Optional, advanced use:** If a standalone Spack build fails, you can pass
+> its log to `spack-agent result` to give the failure details to an unfinished
+> session. The agent may prepare an updated verification script; `result`
+> does not rerun the build. Use `spack-agent run --resume` to continue.
+
+```bash
+spack-agent result /path/to/spack-build.log
+```
+
+To clear the saved session while keeping its logs:
+
+```bash
+spack-agent reset
+```
 
 Generated scripts use paths for the configured backend. Do not run a
 Podman-mode script directly with host Bash; use `spack-agent run --resume` so
 the configured mounts, image, and persistent volumes are applied.
 
-Every generated script must finish with:
-
-```text
-=== VERDICT ===
-exit_code=0
-goal_met=yes
-```
-
-Both success values are required. During `run`, the actual script process must
-also exit zero, and post-build Ruff, Python syntax, Spack package audit, and
-concretization checks must all pass. A success verdict cannot override these
-checks. The same checks run before planning to provide diagnostic context, even
-when the recipe is initially missing or invalid. Missing or incomplete verdicts
-are treated as failures, and repeated identical failures stop the loop after
-two attempts.
-The runner provides each planning phase with the immutable verification spec
-and workflow contract; user context cannot weaken the required final install
-and validation behavior.
-Large logs remain on disk; only the final verdict, selected error lines, and
-the last 80 lines are sent to Copilot. When a generated script preserves a
-first causal stage log, the runner classifies that log rather than Spack's
-generic aggregate failure footer. It writes `step_NN_result.json` with the
-failure category, signature, causal-log path, and DAG fingerprint.
+A run succeeds only when verification completes and the recipe passes lint,
+syntax, Spack audit, and concretization checks.
 
 ### Missing prerequisites
 
