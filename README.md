@@ -326,5 +326,6 @@ podman volume rm spack-agent-downloads
 ## Test
 
 ```bash
+ruff check .
 python -m unittest discover -s tests -v
 ```

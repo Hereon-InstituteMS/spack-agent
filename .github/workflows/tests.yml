@@ -16,6 +16,8 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install package
-        run: python -m pip install --editable .
+        run: python -m pip install --editable . ruff
+      - name: Run Ruff
+        run: ruff check .
       - name: Run tests
         run: python -m unittest discover -s tests -v
