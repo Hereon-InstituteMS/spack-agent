@@ -1,14 +1,13 @@
 """Persistent state and build-log evaluation for agent verification sessions."""
 
-from dataclasses import asdict, dataclass, field
-from contextlib import contextmanager
 import fcntl
 import hashlib
 import json
-from pathlib import Path
 import re
 import shutil
-
+from contextlib import contextmanager
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
 
 MAX_ATTEMPTS_PER_SIGNATURE = 2
 _SIGNATURE_PATTERNS = (
@@ -82,6 +81,9 @@ def dag_identity(spec_output: str) -> str | None:
 
 
 def evaluate_log(log_text: str) -> tuple[bool, str | None]:
+    blocker = prerequisite_blocker(log_text)
+    if blocker is not None:
+        return False, blocker.reason
     marker = "=== VERDICT ==="
     marker_at = log_text.rfind(marker)
     if marker_at < 0:
@@ -94,6 +96,67 @@ def evaluate_log(log_text: str) -> tuple[bool, str | None]:
     if verdict.get("exit_code") == "0" and verdict.get("goal_met") == "yes":
         return True, None
     return False, error_signature(log_text)
+
+
+@dataclass(frozen=True)
+class Blocker:
+    reason: str
+    action: str
+    evidence: str
+
+
+def prerequisite_blocker(log_text: str) -> Blocker | None:
+    """Read an explicit prerequisite failure from the final verdict only."""
+    marker = "=== VERDICT ==="
+    if marker not in log_text:
+        return None
+    values = {}
+    for line in log_text.rsplit(marker, 1)[1].splitlines():
+        key, separator, value = line.partition("=")
+        if separator:
+            values[key.strip()] = value.strip()
+    if values.get("blocked", "").lower() != "yes":
+        return None
+    required = ("blocker_reason", "blocker_action", "blocker_evidence")
+    if not all(values.get(key) for key in required):
+        return Blocker(
+            reason="Malformed prerequisite blocker verdict",
+            action="Correct the script to provide blocker_reason, blocker_action, and blocker_evidence.",
+            evidence=log_text.rsplit(marker, 1)[1].strip(),
+        )
+    return Blocker(
+        reason=values["blocker_reason"],
+        action=values["blocker_action"],
+        evidence=values["blocker_evidence"],
+    )
+
+
+def preflight_blocker(log_text: str) -> Blocker | None:
+    """Recognize only explicit environment diagnostics, not general solver failures."""
+    explicit = prerequisite_blocker(log_text)
+    if explicit is not None:
+        return explicit
+    external = re.search(
+        r"Cannot build ([\w-]+), since it is configured `buildable:false` and\s+"
+        r"no externals satisfy the request", log_text,
+    )
+    if external is not None:
+        return Blocker(
+            reason=f"No compatible external-only dependency: {external.group(1)}",
+            action="Register a compatible external installation or review its configured requirements, then resume.",
+            evidence=external.group(0),
+        )
+    compiler = re.search(
+        r"(?m)^==> Error: (No compilers (?:found|available|match spec[^\n]*))\.?$",
+        log_text,
+    )
+    if compiler is not None:
+        return Blocker(
+            reason=compiler.group(1),
+            action="Install or register the required compiler in Spack, then resume.",
+            evidence=compiler.group(0),
+        )
+    return None
 
 
 @dataclass
@@ -120,6 +183,7 @@ class Session:
     resume_id: str | None = None
     workspace_fingerprint: str = ""
     done: bool = False
+    blocker: Blocker | None = None
     attempts: list[Attempt] = field(default_factory=list)
 
     def attempts_for(self, signature: str | None) -> int:
@@ -173,6 +237,8 @@ class SessionStore:
         with self.session_file.open("r", encoding="utf-8") as stream:
             raw = json.load(stream)
         raw.pop("config_fingerprint", None)
+        if raw.get("blocker") is not None:
+            raw["blocker"] = Blocker(**raw["blocker"])
         attempts = [Attempt(**attempt) for attempt in raw.pop("attempts", [])]
         return Session(**raw, attempts=attempts)
 

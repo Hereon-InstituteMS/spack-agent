@@ -1,15 +1,24 @@
 import os
-from pathlib import Path
 import signal
 import subprocess
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from spack_agent import cli, runner, workflow
 from spack_agent.config import AgentConfig, RunnerConfig, WorkspaceConfig, load_config
 from spack_agent.copilot import CopilotResult
-from spack_agent import cli, runner, workflow
-from spack_agent.session import Attempt, Session, SessionLockedError, SessionStore
+from spack_agent.session import (
+    Attempt,
+    Blocker,
+    Session,
+    SessionLockedError,
+    SessionStore,
+    evaluate_log,
+    preflight_blocker,
+    prerequisite_blocker,
+)
 
 
 def make_config(root: Path, task: str = "test") -> AgentConfig:
@@ -32,6 +41,283 @@ def make_config(root: Path, task: str = "test") -> AgentConfig:
         verification_spec="example@1.0",
         _config_directory=root,
     )
+
+
+BLOCKED_LOG = """=== VERDICT ===
+exit_code=1
+goal_met=no
+blocked=yes
+blocker_reason=Required external CUDA is unavailable
+blocker_action=Register a compatible external CUDA toolkit, then resume.
+blocker_evidence=No compatible external CUDA was found in the concrete spec.
+"""
+
+
+class PrerequisiteTests(unittest.TestCase):
+    def test_only_final_explicit_verdict_blocks(self):
+        self.assertIsNone(prerequisite_blocker("compiler missing\nblocked=yes\n"))
+        self.assertIsNone(prerequisite_blocker(
+            BLOCKED_LOG + "=== VERDICT ===\nexit_code=0\ngoal_met=yes\n"
+        ))
+        self.assertIsNone(prerequisite_blocker(
+            "=== VERDICT ===\nexit_code=1\ngoal_met=no\nerror=missing header\n"
+        ))
+        blocker = prerequisite_blocker(BLOCKED_LOG)
+        self.assertEqual(blocker.reason, "Required external CUDA is unavailable")
+        self.assertIn("Register", blocker.action)
+
+    def test_malformed_blocker_stops_with_explicit_diagnostic(self):
+        blocker = prerequisite_blocker("=== VERDICT ===\nblocked=yes\n")
+        self.assertIn("Malformed", blocker.reason)
+        self.assertIn("blocker_action", blocker.action)
+
+    def test_explicit_environment_diagnostics_are_not_general_build_errors(self):
+        for text in (
+            "==> Error: No compilers found",
+            "==> Error: No compilers available",
+            "==> Error: No compilers match spec gcc@15",
+            (
+                "Cannot build cuda, since it is configured `buildable:false` and "
+                "no externals satisfy the request"
+            ),
+        ):
+            with self.subTest(text=text):
+                self.assertIsNotNone(preflight_blocker(text))
+        for text in (
+            "failed to concretize: package conflict",
+            "fatal error: missing.h: No such file or directory",
+            "CMake Error: The compiler identification is unknown",
+            "Cannot build cuda from source",
+        ):
+            with self.subTest(text=text):
+                self.assertIsNone(preflight_blocker(text))
+        self.assertFalse(evaluate_log(
+            BLOCKED_LOG + "exit_code=0\ngoal_met=yes\n"
+        )[0])
+
+    def test_blocker_overrides_success_and_does_not_start_agent(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            config = make_config(Path(temporary))
+            store = SessionStore(config.state_dir)
+            script, log = store.step_paths(1)
+            Path(log).write_text(
+                BLOCKED_LOG + "exit_code=0\ngoal_met=yes\n", encoding="utf-8"
+            )
+            store.save(Session(
+                goal=config.goal_text,
+                workspace_fingerprint=config.workspace_fingerprint,
+                step=1,
+                attempts=[Attempt(step=1, script_path=script, log_path=log)],
+            ))
+            with patch.object(workflow, "_ask") as ask:
+                self.assertEqual(workflow.process_result(config, store), 3)
+            ask.assert_not_called()
+            session = store.load()
+            self.assertFalse(session.done)
+            self.assertIsInstance(session.blocker, Blocker)
+            self.assertEqual(session.attempts[0].failure_category, "blocked")
+            result = Path(session.attempts[0].result_path).read_text(encoding="utf-8")
+            self.assertIn('"action": "Register', result)
+            with patch("builtins.print") as output:
+                workflow.show_status(store)
+            self.assertIn("Register a compatible", str(output.call_args_list))
+
+    def test_initial_preflight_block_is_saved_without_planning(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            config = make_config(Path(temporary))
+            with (
+                patch.object(runner, "run_preflight", return_value=runner.PreflightResult(
+                    BLOCKED_LOG, False, None,
+                )),
+                patch.object(runner, "start_goal") as start,
+            ):
+                self.assertEqual(runner.run_workflow(config, resume=False), 3)
+            start.assert_not_called()
+            session = SessionStore(config.state_dir).load()
+            self.assertIsNotNone(session.blocker)
+            self.assertFalse(session.attempts)
+
+    def test_preflight_block_overrides_success_without_followup(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            config = make_config(Path(temporary))
+            store = SessionStore(config.state_dir)
+            script, log = store.step_paths(1)
+            Path(log).write_text(
+                "=== VERDICT ===\nexit_code=0\ngoal_met=yes\n", encoding="utf-8",
+            )
+            store.save(Session(
+                goal=config.goal_text,
+                workspace_fingerprint=config.workspace_fingerprint,
+                step=1,
+                attempts=[Attempt(step=1, script_path=script, log_path=log)],
+            ))
+            with patch.object(workflow, "_ask") as ask:
+                self.assertEqual(workflow.process_result(
+                    config, store, preflight_succeeded=False,
+                    preflight_output="==> Error: No compilers available",
+                ), 3)
+            ask.assert_not_called()
+            self.assertIn("compilers", store.load().blocker.reason)
+            self.assertFalse(store.load().attempts[-1].succeeded)
+
+    def test_revised_blocked_goal_replans_and_preserves_blocker_history(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            config = make_config(Path(temporary))
+            store = SessionStore(config.state_dir)
+            script, log = store.step_paths(1)
+            Path(log).write_text(BLOCKED_LOG, encoding="utf-8")
+            blocker = prerequisite_blocker(BLOCKED_LOG)
+            store.save(Session(
+                goal="previous goal",
+                workspace_fingerprint=config.workspace_fingerprint,
+                step=1,
+                blocker=blocker,
+                attempts=[Attempt(
+                    step=1, script_path=script, log_path=log,
+                    failure_category="blocked", error_signature=blocker.reason,
+                )],
+            ))
+
+            def replan(*_args):
+                next_script, _ = store.step_paths(2)
+                Path(next_script).write_text("new checks", encoding="utf-8")
+                return CopilotResult(text="Revised prerequisite checks")
+
+            with (
+                patch.object(runner, "run_preflight", return_value=runner.PreflightResult(
+                    "", True, None,
+                )),
+                patch.object(workflow, "_ask", side_effect=replan) as ask,
+                patch.object(runner, "run_step_script", return_value=130) as run_script,
+            ):
+                self.assertEqual(runner.run_workflow(config, resume=True), 130)
+            ask.assert_called_once()
+            self.assertEqual(run_script.call_args.args[1], store.step_paths(2)[0])
+            self.assertIsNone(store.load().blocker)
+            self.assertEqual(store.load().attempts[0].error_signature, blocker.reason)
+
+    def test_blocked_resume_rechecks_without_goal_edit_and_can_succeed(self):
+        for resolved in (False, True):
+            with self.subTest(resolved=resolved), tempfile.TemporaryDirectory() as temporary:
+                config = make_config(Path(temporary))
+                store = SessionStore(config.state_dir)
+                script, log = store.step_paths(1)
+                Path(script).write_text("dynamic prerequisite checks", encoding="utf-8")
+                store.save(Session(
+                    goal=config.goal_text,
+                    workspace_fingerprint=config.workspace_fingerprint,
+                    step=1,
+                    blocker=prerequisite_blocker(BLOCKED_LOG),
+                    attempts=[Attempt(step=1, script_path=script, log_path=log)],
+                ))
+
+                def verify(*_args, log_path=log, fixed=resolved):
+                    Path(log_path).write_text(
+                        "=== VERDICT ===\nexit_code=0\ngoal_met=yes\n" if fixed
+                        else BLOCKED_LOG, encoding="utf-8",
+                    )
+                    return 0 if fixed else 1
+
+                with (
+                    patch.object(runner, "run_preflight", return_value=runner.PreflightResult(
+                        "", True, None,
+                    )) as preflight,
+                    patch.object(runner, "run_step_script", side_effect=verify),
+                    patch.object(workflow, "_ask") as ask,
+                ):
+                    self.assertEqual(
+                        runner.run_workflow(config, resume=True), 0 if resolved else 3,
+                    )
+                ask.assert_not_called()
+                self.assertEqual(preflight.call_count, 2 if resolved else 1)
+                session = store.load()
+                self.assertEqual(session.done, resolved)
+                self.assertEqual(session.blocker is None, resolved)
+                self.assertEqual(len(session.attempts), 1)
+
+    def test_resume_rechecks_initial_block_before_first_planning(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            config = make_config(Path(temporary))
+            store = SessionStore(config.state_dir)
+            store.save(Session(
+                goal=config.goal_text,
+                workspace_fingerprint=config.workspace_fingerprint,
+                blocker=prerequisite_blocker(BLOCKED_LOG),
+            ))
+            for output, expected_calls in ((BLOCKED_LOG, 0), ("", 1)):
+                with (
+                    patch.object(runner, "run_preflight", return_value=runner.PreflightResult(
+                        output, not output, None,
+                    )),
+                    patch.object(runner, "start_goal", return_value=1) as start,
+                ):
+                    self.assertEqual(
+                        runner.run_workflow(config, resume=True), 3 if output else 1,
+                    )
+                self.assertEqual(start.call_count, expected_calls)
+
+    def test_real_script_stops_for_missing_compiler_and_resumes_after_restoration(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            base = make_config(root)
+            config = AgentConfig(
+                workspace=base.workspace,
+                goal_context=base.goal_context,
+                verification_spec=base.verification_spec,
+                runner=RunnerConfig(poll_seconds=0.01),
+                _config_directory=root,
+            )
+            compiler = root / "required-compiler"
+            store = SessionStore(config.state_dir)
+            script, log = store.step_paths(1)
+            blocked = (
+                "=== VERDICT ===\nexit_code=1\ngoal_met=no\nblocked=yes\n"
+                "blocker_reason=Required compiler executable is missing\n"
+                f"blocker_action=Restore {compiler}, then resume.\n"
+                f"blocker_evidence=Executable check failed: {compiler}\n"
+            )
+            Path(script).write_text(
+                f"if [[ ! -x '{compiler}' ]]; then\n"
+                f"cat <<'EOF'\n{blocked}EOF\nexit 1\nfi\n"
+                f"'{compiler}' --version || exit 1\n"
+                "printf '=== VERDICT ===\\nexit_code=0\\ngoal_met=yes\\n'\n",
+                encoding="utf-8",
+            )
+            store.save(Session(
+                goal=config.goal_text,
+                workspace_fingerprint=config.workspace_fingerprint,
+                step=1,
+                attempts=[Attempt(step=1, script_path=script, log_path=log)],
+            ))
+            with (
+                patch.object(runner, "run_preflight", return_value=runner.PreflightResult(
+                    "", True, None,
+                )),
+                patch.object(workflow, "_ask") as ask,
+            ):
+                self.assertEqual(runner.run_workflow(config, resume=True), 3)
+                self.assertIsNotNone(store.load().blocker)
+                compiler.write_text("#!/bin/sh\necho 'test compiler restored'\n", encoding="utf-8")
+                compiler.chmod(0o755)
+                self.assertEqual(runner.run_workflow(config, resume=True), 0)
+            ask.assert_not_called()
+            self.assertTrue(store.load().done)
+            self.assertIsNone(store.load().blocker)
+
+    def test_missing_preflight_tool_returns_structured_blocker(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            config = make_config(Path(temporary))
+            with patch.dict(os.environ, {"PATH": temporary}):
+                # Execute the shell directly so the deliberately empty PATH is usable.
+                real_run = subprocess.run
+
+                def run(command, **kwargs):
+                    return real_run(["/bin/bash", *command[1:]], **kwargs)
+
+                with patch.object(runner.subprocess, "run", side_effect=run):
+                    preflight = runner.run_preflight(config)
+            self.assertFalse(preflight.succeeded)
+            self.assertIn("ruff", prerequisite_blocker(preflight.output).reason)
 
 
 class PathSafetyTests(unittest.TestCase):

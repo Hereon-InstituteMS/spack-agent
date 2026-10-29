@@ -197,6 +197,20 @@ first causal stage log, the runner classifies that log rather than Spack's
 generic aggregate failure footer. It writes `step_NN_result.json` with the
 failure category, signature, causal-log path, and DAG fingerprint.
 
+### Missing prerequisites
+
+If a required tool or other prerequisite is missing or incompatible,
+`spack-agent` stops and tells you what needs attention. Check the details with
+`spack-agent status`, fix the prerequisite in your environment, then resume:
+
+```bash
+spack-agent run --resume
+```
+
+You do not need to change your goal. `spack-agent` does not install system
+software or change your Spack configuration. Dependencies that Spack can
+build are handled as usual.
+
 ## Container runner
 
 On the first `spack-agent run` with `runner.backend = "podman"`, the runner

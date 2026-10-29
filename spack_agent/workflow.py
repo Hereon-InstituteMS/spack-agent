@@ -1,21 +1,23 @@
 """Iterate agent planning and build verification for long-running checks."""
 
-from pathlib import Path
 import json
 import re
+from pathlib import Path
 
 from .config import AgentConfig
 from .copilot import ask_copilot
 from .session import (
     MAX_ATTEMPTS_PER_SIGNATURE,
     Attempt,
+    Blocker,
     Session,
     SessionStore,
     error_signature,
     evaluate_log,
     failure_category,
+    preflight_blocker,
+    prerequisite_blocker,
 )
-
 
 _TAIL_LINES = 80
 _MAX_ERROR_LINES = 40
@@ -48,6 +50,28 @@ Script rules:
 
 Set goal_met=yes only after programmatically verifying the full goal. The
 agent will not be started again after a successful verdict.
+
+Check essential prerequisites before long-running work: required compiler
+executables, registered external-only dependencies and their usable paths,
+and externally supplied tools/versions required by the goal. Do not mark
+ordinary Spack-buildable dependencies or repairable recipe errors as blocked.
+If user intervention is required, do not attempt to bypass the prerequisite,
+install system software, change Spack configuration, or suppress failures.
+Instead, print the following final block (all values must be single-line,
+specific and nonempty), then exit nonzero immediately:
+
+    echo "=== VERDICT ==="
+    echo "exit_code=1"
+    echo "goal_met=no"
+    echo "blocked=yes"
+    echo "blocker_reason=<missing or incompatible prerequisite>"
+    echo "blocker_action=<specific user action required>"
+    echo "blocker_evidence=<failed check and observed result>"
+    exit 1
+
+The runner stops without another agent call. On --resume it reruns this
+script, so prerequisites must be checked dynamically, not reported through
+an unconditional failure or checks of human-formatted configuration text.
 """
 _GOAL_CONTRACT = """
 The configured verification spec is the exact final install target. Make only
@@ -93,7 +117,8 @@ def _causal_log_path(log_path: Path, step: int) -> Path | None:
 
 
 def _write_result_artifact(
-    attempt: Attempt, *, succeeded: bool, signature: str | None, category: str | None
+    attempt: Attempt, *, succeeded: bool, signature: str | None, category: str | None,
+    blocker: Blocker | None = None,
 ) -> None:
     result_path = Path(attempt.log_path).with_name(f"step_{attempt.step:02d}_result.json")
     payload = {
@@ -105,6 +130,12 @@ def _write_result_artifact(
         "causal_log_path": attempt.causal_log_path,
         "dag_identity": attempt.dag_identity,
     }
+    if blocker is not None:
+        payload["blocker"] = {
+            "reason": blocker.reason,
+            "action": blocker.action,
+            "evidence": blocker.evidence,
+        }
     result_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     attempt.result_path = str(result_path)
 
@@ -139,6 +170,17 @@ def session_matches_workspace(session: Session, config: AgentConfig) -> bool:
         "Run without --resume to start fresh."
     )
     return False
+
+
+def stop_for_blocker(store: SessionStore, session: Session, blocker: Blocker) -> int:
+    session.blocker = blocker
+    session.done = False
+    store.save(session)
+    print(f"[spack-agent] BLOCKED: {blocker.reason}")
+    print(f"[spack-agent] Evidence: {blocker.evidence}")
+    print(f"[spack-agent] Required action: {blocker.action}")
+    print("[spack-agent] Fix the prerequisite, then run with --resume. No repair agent was started.")
+    return 3
 
 
 def _workspace_context(config: AgentConfig) -> str:
@@ -286,7 +328,7 @@ def revise_goal(
         )
     else:
         log_context = "(no partial build log was found)"
-    if not was_done:
+    if not was_done and session.blocker is None:
         last.error_signature = "interrupted or superseded by revised goal"
         last.succeeded = False
     store.save(session)
@@ -294,11 +336,15 @@ def revise_goal(
     next_step = session.step + 1
     script_path, log_path = store.step_paths(next_step)
     Path(script_path).unlink(missing_ok=True)
-    session_state = (
-        "The previous goal was verified, and the user supplied follow-up work."
-        if was_done
-        else "The user interrupted the previous build and revised the goal."
-    )
+    if was_done:
+        session_state = "The previous goal was verified, and the user supplied follow-up work."
+    elif session.blocker is not None:
+        session_state = (
+            f"The previous verification was blocked: {session.blocker.reason}. "
+            "The user revised the goal; recheck prerequisites against the new request."
+        )
+    else:
+        session_state = "The user interrupted the previous build and revised the goal."
     prompt = f"""{session_state}
 
 {_workspace_context(config)}
@@ -340,6 +386,7 @@ Reply with a 2-4 sentence summary of the revised plan and edits.
     session.goal = new_goal
     session.step = next_step
     session.done = False
+    session.blocker = None
     session.resume_id = result.resume_id or session.resume_id
     session.attempts.append(
         Attempt(
@@ -389,6 +436,19 @@ def process_result(
         if causal_log is not None
         else log_text
     )
+    blocker = prerequisite_blocker(log_text)
+    if blocker is None and preflight_succeeded is False:
+        blocker = preflight_blocker(preflight_output)
+    if blocker is not None:
+        last.succeeded = False
+        last.error_signature = blocker.reason
+        last.failure_category = "blocked"
+        _write_result_artifact(
+            last, succeeded=False, signature=blocker.reason, category="blocked",
+            blocker=blocker,
+        )
+        return stop_for_blocker(store, session, blocker)
+    session.blocker = None
     succeeded, signature = evaluate_log(log_text)
     gate_category = None
     if build_exit_code is not None and build_exit_code != 0:
@@ -493,6 +553,10 @@ def show_status(store: SessionStore) -> int:
     print(f"Model   : {session.model or 'Copilot default'}")
     print(f"Step    : {session.step}")
     print(f"Done    : {session.done}")
+    if session.blocker is not None:
+        print(f"Blocked : {session.blocker.reason}")
+        print(f"Evidence: {session.blocker.evidence}")
+        print(f"Action  : {session.blocker.action}")
     print(f"Credits : {session.total_credits():.2f}")
     print("\nAttempts:")
     print(session.history_digest(limit=50))

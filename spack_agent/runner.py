@@ -1,24 +1,31 @@
 """Run generated build-verification scripts without a timeout."""
 
-from dataclasses import dataclass
 import os
-from pathlib import Path
 import shlex
-import signal
 import shutil
+import signal
 import subprocess
 import time
+from dataclasses import dataclass
+from pathlib import Path
 
-from .config import AgentConfig, LINUX_PROFILES
-from .session import SessionStore, dag_identity
+from .config import LINUX_PROFILES, AgentConfig
+from .session import (
+    Blocker,
+    Session,
+    SessionStore,
+    dag_identity,
+    preflight_blocker,
+    prerequisite_blocker,
+)
 from .workflow import (
     process_result,
     revise_goal,
     session_matches_workspace,
     show_status,
     start_goal,
+    stop_for_blocker,
 )
-
 
 _PODMAN_INFRASTRUCTURE_EXIT_CODES = {125, 126, 127, 137}
 _CONTAINER_DIRECTORY = Path(__file__).resolve().parent.parent / "container"
@@ -29,6 +36,10 @@ class PreflightResult:
     output: str
     succeeded: bool
     dag_identity: str | None
+
+    @property
+    def blocker(self) -> Blocker | None:
+        return preflight_blocker(self.output) if not self.succeeded else None
 
 
 def _package_name(spec: str) -> str:
@@ -50,8 +61,20 @@ def run_preflight(config: AgentConfig) -> PreflightResult:
     command_text = "\n".join(
         [
             "set -euo pipefail",
+            """require_tool() {
+    if ! command -v "$1" >/dev/null 2>&1; then
+        printf '\\n=== VERDICT ===\\nexit_code=1\\ngoal_met=no\\nblocked=yes\\n'
+        printf 'blocker_reason=Required preflight tool is unavailable: %s\\n' "$1"
+        printf 'blocker_action=Install or restore %s in the verification environment, then resume.\\n' "$1"
+        printf 'blocker_evidence=command -v %s failed\\n' "$1"
+        exit 1
+    fi
+}""",
+            "require_tool ruff",
             f"ruff check {shlex.quote(recipe)}",
+            "require_tool python3",
             f"python3 -m py_compile {shlex.quote(recipe)}",
+            f"require_tool {shlex.quote(spack)}",
             f"{shlex.quote(spack)} audit packages {shlex.quote(package)}",
             "echo '=== CONCRETIZED DAG ==='",
             f"{shlex.quote(spack)} spec -Il {shlex.quote(config.verification_spec)}",
@@ -214,6 +237,14 @@ def run_workflow(config: AgentConfig, resume: bool) -> int:
     if not resume:
         store.clear_artifacts()
         preflight = run_preflight(config)
+        blocker = preflight.blocker
+        if blocker is not None:
+            return stop_for_blocker(store, Session(
+                goal=config.goal_text,
+                repo_path=str(config.workspace.writable_repository),
+                model=config.model,
+                workspace_fingerprint=config.workspace_fingerprint,
+            ), blocker)
         result = start_goal(
             config,
             store,
@@ -229,8 +260,25 @@ def run_workflow(config: AgentConfig, resume: bool) -> int:
             return 1
         if not session_matches_workspace(session, config):
             return 1
+        if session.blocker is not None:
+            print("[spack-agent] Rechecking blocked session prerequisites...")
+            preflight = run_preflight(config)
+            blocker = preflight.blocker
+            if blocker is not None:
+                return stop_for_blocker(store, session, blocker)
+            if not session.attempts:
+                result = start_goal(
+                    config, store, force=True, preflight_output=preflight.output,
+                    preflight_dag_identity=preflight.dag_identity,
+                )
+                if result != 0:
+                    return result
+                session = store.load()
         if session.goal != config.goal_text:
             preflight = run_preflight(config)
+            blocker = preflight.blocker
+            if blocker is not None:
+                return stop_for_blocker(store, session, blocker)
             if revise_goal(
                 config,
                 store,
@@ -275,7 +323,11 @@ def run_workflow(config: AgentConfig, resume: bool) -> int:
                 f"(exit code {exit_code}); the agent was not restarted."
             )
             return 1
-        preflight = run_preflight(config)
+        log_path = Path(attempt.log_path)
+        blocked = log_path.is_file() and prerequisite_blocker(
+            log_path.read_text(encoding="utf-8", errors="replace")
+        ) is not None
+        preflight = PreflightResult("", False, None) if blocked else run_preflight(config)
         result = process_result(
             config,
             store,
@@ -284,7 +336,7 @@ def run_workflow(config: AgentConfig, resume: bool) -> int:
             build_exit_code=exit_code,
             preflight_succeeded=preflight.succeeded,
         )
-        if result in {1, 2}:
+        if result in {1, 2, 3}:
             show_status(store)
             return result
     else:
