@@ -793,6 +793,10 @@ class RunnerTests(unittest.TestCase):
             with (
                 patch.object(workflow, "_ask", side_effect=write_revised_script),
                 patch.object(runner, "run_step_script", return_value=130) as run_script,
+                patch.object(
+                    runner, "run_preflight",
+                    return_value=runner.PreflightResult("", True, None),
+                ),
             ):
                 self.assertEqual(runner.run_workflow(config, resume=True), 130)
 
@@ -847,6 +851,10 @@ class RunnerTests(unittest.TestCase):
             with (
                 patch.object(workflow, "_ask", side_effect=write_revised_script),
                 patch.object(runner, "run_step_script", return_value=130),
+                patch.object(
+                    runner, "run_preflight",
+                    return_value=runner.PreflightResult("", True, None),
+                ),
             ):
                 self.assertEqual(runner.run_workflow(config, resume=True), 130)
 
