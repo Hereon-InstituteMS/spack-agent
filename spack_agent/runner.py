@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from .config import LINUX_PROFILES, AgentConfig
+from .config import LINUX_PROFILES, ROCKY_PROFILES, AgentConfig
 from .session import (
     Blocker,
     Session,
@@ -161,9 +161,12 @@ def _podman_image_exists(image: str) -> bool:
 def _build_podman_image(config: AgentConfig) -> bool:
     """Build the selected image from the bundled toolchain definition."""
     toolchain = config.runner.toolchain
-    containerfile = _CONTAINER_DIRECTORY / (
-        "Containerfile.gcc" if toolchain in LINUX_PROFILES else f"Containerfile.{toolchain}"
-    )
+    if toolchain in LINUX_PROFILES:
+        containerfile = _CONTAINER_DIRECTORY / "Containerfile.gcc"
+    elif toolchain in ROCKY_PROFILES:
+        containerfile = _CONTAINER_DIRECTORY / "Containerfile.rocky-gcc"
+    else:
+        containerfile = _CONTAINER_DIRECTORY / f"Containerfile.{toolchain}"
     if not containerfile.is_file():
         print(f"[spack-agent] Toolchain definition not found: {containerfile}")
         return False
@@ -183,6 +186,13 @@ def _build_podman_image(config: AgentConfig) -> bool:
             ("UBUNTU_VERSION", ubuntu_version),
             ("GCC_VERSION", gcc_version),
             ("CLANG_VERSION", clang_version),
+        ):
+            command.extend(["--build-arg", f"{name}={value}"])
+    elif toolchain in ROCKY_PROFILES:
+        rocky_version, gcc_version = ROCKY_PROFILES[toolchain]
+        for name, value in (
+            ("ROCKY_VERSION", rocky_version),
+            ("GCC_VERSION", gcc_version),
         ):
             command.extend(["--build-arg", f"{name}={value}"])
     command.append(str(_CONTAINER_DIRECTORY.parent))

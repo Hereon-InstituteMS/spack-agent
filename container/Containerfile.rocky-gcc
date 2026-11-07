@@ -1,0 +1,77 @@
+ARG ROCKY_VERSION=10.2
+FROM rockylinux:${ROCKY_VERSION}
+
+ARG SPACK_REF=v1.2.2
+ARG GCC_VERSION=16.2.0
+
+RUN dnf install -y \
+        ca-certificates \
+        bzip2 \
+        cmake \
+        curl \
+        diffutils \
+        file \
+        gcc \
+        gcc-c++ \
+        gcc-gfortran \
+        git \
+        make \
+        patch \
+        pkgconf-pkg-config \
+        python3 \
+        python3-pip \
+        tar \
+        unzip \
+        wget \
+        xz \
+    && dnf clean all
+
+RUN curl -fsSLo /tmp/gcc.tar.xz \
+        "https://ftp.gnu.org/gnu/gcc/gcc-${GCC_VERSION}/gcc-${GCC_VERSION}.tar.xz" \
+    && mkdir -p /tmp/gcc-source /tmp/gcc-build \
+    && tar -xJf /tmp/gcc.tar.xz --strip-components=1 -C /tmp/gcc-source \
+    && cd /tmp/gcc-source \
+    && ./contrib/download_prerequisites \
+    && cd /tmp/gcc-build \
+    && /tmp/gcc-source/configure \
+        --prefix="/opt/gcc-${GCC_VERSION}" \
+        --enable-languages=c,c++,fortran \
+        --disable-multilib \
+    && make -j"$(nproc)" \
+    && make install-strip \
+    && rm -rf /tmp/gcc.tar.xz /tmp/gcc-source /tmp/gcc-build
+
+RUN git init /opt/spack \
+    && git -C /opt/spack remote add origin https://github.com/spack/spack.git \
+    && git -C /opt/spack fetch --depth 1 origin "$SPACK_REF" \
+    && git -C /opt/spack checkout --detach FETCH_HEAD
+
+ENV PATH="/opt/gcc-${GCC_VERSION}/bin:/opt/spack-agent-tools/bin:/opt/spack/bin:${PATH}" \
+    SPACK_ROOT="/opt/spack" \
+    SPACK_USER_CACHE_PATH="/var/cache/spack" \
+    SPACK_USER_CONFIG_PATH="/opt/spack-config"
+
+RUN python3 -m venv /opt/spack-agent-tools \
+    && /opt/spack-agent-tools/bin/pip install --no-cache-dir ruff==0.16.0 \
+    && mkdir -p /opt/spack-config /opt/spack-store /tmp/spack-stage /var/cache/spack \
+    && printf '%s\n' \
+        'config:' \
+        '  install_tree:' \
+        '    root: /opt/spack-store' \
+        '  build_stage:' \
+        '  - /tmp/spack-stage' \
+        '  source_cache: /var/cache/spack/source-cache' \
+        '  misc_cache: /var/cache/spack/misc-cache' \
+        > /opt/spack-config/config.yaml \
+    && mkdir -p /opt/spack-agent-compilers/bin \
+    && ln -s "/opt/gcc-${GCC_VERSION}/bin/gcc" /opt/spack-agent-compilers/bin/gcc \
+    && ln -s "/opt/gcc-${GCC_VERSION}/bin/g++" /opt/spack-agent-compilers/bin/g++ \
+    && ln -s "/opt/gcc-${GCC_VERSION}/bin/gfortran" /opt/spack-agent-compilers/bin/gfortran \
+    && spack compiler find --scope=user /opt/spack-agent-compilers/bin \
+    && test -s /opt/spack-config/packages.yaml
+
+COPY --chmod=0755 container/entrypoint.sh /usr/local/bin/spack-agent-entrypoint
+
+WORKDIR /workspace/packages
+ENTRYPOINT ["/usr/local/bin/spack-agent-entrypoint"]
+CMD ["bash"]

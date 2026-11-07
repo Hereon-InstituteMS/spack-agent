@@ -13,11 +13,15 @@ TOOLCHAINS = {
     "oneapi": ("spack-agent-builder:oneapi", "spack-agent-store-oneapi"),
     "ubuntu24.04-gcc13": ("spack-agent-builder:ubuntu24.04-gcc13", "spack-agent-store-ubuntu24.04-gcc13"),
     "ubuntu26.04-gcc15": ("spack-agent-builder:ubuntu26.04-gcc15", "spack-agent-store-ubuntu26.04-gcc15"),
+    "rocky10.2-gcc16.2": ("spack-agent-builder:rocky10.2-gcc16.2", "spack-agent-store-rocky10.2-gcc16.2"),
 }
 LINUX_PROFILES = {
     "clang": ("24.04", "13", "18"),
     "ubuntu24.04-gcc13": ("24.04", "13", ""),
     "ubuntu26.04-gcc15": ("26.04", "15", ""),
+}
+ROCKY_PROFILES = {
+    "rocky10.2-gcc16.2": ("10.2", "16.2.0"),
 }
 
 

@@ -254,11 +254,12 @@ Host mode is direct and convenient, but does not isolate package builds from
 the host.
 
 The Podman backend uses a reproducible image for one selected toolchain.
-Missing images are built on demand from `container/Containerfile.gcc` or
-`container/Containerfile.oneapi`, using the configured Spack Git reference.
-GCC and Clang profiles share the parameterized GCC Containerfile; oneAPI has
-its own image. Images are built only when missing, so changing `spack_ref`
-does not update an existing image automatically.
+Missing images are built on demand from a toolchain-specific Containerfile,
+using the configured Spack Git reference. Ubuntu GCC and Clang profiles share
+the parameterized `container/Containerfile.gcc`; the Rocky Linux 10.2/GCC 16.2
+profile uses `container/Containerfile.rocky-gcc`; oneAPI uses
+`container/Containerfile.oneapi`. Images are built only when missing, so
+changing `spack_ref` does not update an existing image automatically.
 
 Each verification iteration starts `podman run --rm`. The container itself
 and its writable layer are temporary, while named volumes persist:
@@ -281,6 +282,45 @@ discovery deliberately uses the configured executable symlinks, not a broad
 `PATH` search or automatic external-package discovery. This makes the
 toolchain available to Spack without silently treating arbitrary host
 software as an external package.
+
+### Adding a toolchain profile
+
+1. Choose a stable profile key, such as `rocky10.2-gcc16.2`. In
+  `spack_agent/config.py`, add that key to `TOOLCHAINS` with a unique image
+  name and install-volume name. A distinct install volume prevents packages
+  built with different compiler environments from being mixed.
+2. Define how the image is built. In `spack_agent/runner.py`,
+  `_build_podman_image()` routes `LINUX_PROFILES` to
+  `container/Containerfile.gcc` with `UBUNTU_VERSION`, `GCC_VERSION`, and
+  `CLANG_VERSION` build arguments; it routes `ROCKY_PROFILES` to
+  `container/Containerfile.rocky-gcc` with `ROCKY_VERSION` and `GCC_VERSION`.
+  Other profiles use `container/Containerfile.<profile-key>`. Add the profile
+  to the appropriate map in `config.py` and keep its key consistent with
+  `TOOLCHAINS` and the runner routing.
+3. In the Containerfile, install the compiler and all required build
+  prerequisites. Expose the compiler executables under
+  `/opt/spack-agent-compilers/bin`, then run
+  `spack compiler find --scope=user` on that directory. Include every
+  compiler language the packages need, such as C, C++, and Fortran. Preserve
+  the shared Spack setup, Ruff, cache/config directories, and entrypoint from
+  the existing images. Use OS package names and utilities available in the
+  target distribution; a missing requirement will cause the automatic image
+  build to fail before verification starts.
+4. In `tests/test_workflow.py`, test the profile's image and install-volume
+  names, and mock `_build_podman_image()` to assert the selected Containerfile
+  and exact build arguments. Include the profile in the test that checks
+  profile-specific session identity.
+5. Add the profile to the list in `spack-agent.example.toml` and to the
+  user-facing toolchain documentation in `README.md`. Ensure example specs
+  use a compiler registered in the image and valid Spack syntax, for example
+  `%gcc@16.2.0`.
+
+Run `ruff check .` and `python -m unittest discover -s tests -v` for the routine
+code checks; unit tests do not execute a Containerfile. On the first
+`spack-agent run` with a profile, the runner automatically builds its image if
+it is missing, before launching Copilot. This full build may download a base
+OS and compiler sources and compile the compiler, so it is not part of routine
+LLM code-change validation.
 
 Network access defaults to Podman's normal network. Setting `runner.network`
 can restrict it, for example to validate a build after required sources have

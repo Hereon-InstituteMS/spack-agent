@@ -7,6 +7,7 @@ import json
 from spack_agent.config import AgentConfig, RunnerConfig, WorkspaceConfig, load_config
 from spack_agent import workflow
 from spack_agent.copilot import CopilotResult
+from spack_agent.runner import _build_podman_image
 from spack_agent.session import (
     Attempt,
     Session,
@@ -223,16 +224,47 @@ context = "test"
         self.assertEqual(runner.image, "spack-agent-builder:oneapi")
         self.assertEqual(runner.install_volume, "spack-agent-store-oneapi")
 
+    def test_rocky_toolchain_uses_gcc_162_image_and_store(self):
+        runner = RunnerConfig(toolchain="rocky10.2-gcc16.2")
+
+        self.assertEqual(runner.image, "spack-agent-builder:rocky10.2-gcc16.2")
+        self.assertEqual(runner.install_volume, "spack-agent-store-rocky10.2-gcc16.2")
+
+    def test_rocky_toolchain_builds_the_matching_containerfile(self):
+        workspace = WorkspaceConfig(
+            writable_repository=Path("/packages"),
+            spack_repository=Path("builtin"),
+            recipe_path=Path("example/package.py"),
+            host_spack_executable=None,
+            source_repository=Path("/source"),
+        )
+        config = AgentConfig(
+            workspace=workspace,
+            goal_context="test",
+            verification_spec="example@1.0",
+            runner=RunnerConfig(backend="podman", toolchain="rocky10.2-gcc16.2"),
+        )
+
+        with patch("spack_agent.runner.subprocess.run") as run:
+            run.return_value.returncode = 0
+            self.assertTrue(_build_podman_image(config))
+
+        command = run.call_args.args[0]
+        self.assertEqual(Path(command[command.index("--file") + 1]).name, "Containerfile.rocky-gcc")
+        self.assertIn("ROCKY_VERSION=10.2", command)
+        self.assertIn("GCC_VERSION=16.2.0", command)
+
     def test_profiles_have_separate_names_but_spack_refs_only_change_session_identity(self):
         profiles = [
             RunnerConfig(backend="podman", toolchain="ubuntu24.04-gcc13"),
             RunnerConfig(backend="podman", toolchain="ubuntu26.04-gcc15"),
+            RunnerConfig(backend="podman", toolchain="rocky10.2-gcc16.2"),
             RunnerConfig(backend="podman", toolchain="ubuntu26.04-gcc15", spack_ref="develop"),
         ]
-        self.assertEqual(len({profile.image for profile in profiles}), 2)
-        self.assertEqual(len({profile.install_volume for profile in profiles}), 2)
-        self.assertEqual(profiles[1].image, profiles[2].image)
-        self.assertEqual(profiles[1].install_volume, profiles[2].install_volume)
+        self.assertEqual(len({profile.image for profile in profiles}), 3)
+        self.assertEqual(len({profile.install_volume for profile in profiles}), 3)
+        self.assertEqual(profiles[1].image, profiles[3].image)
+        self.assertEqual(profiles[1].install_volume, profiles[3].install_volume)
         self.assertEqual(profiles[0].spack_ref, "v1.2.2")
         workspace = WorkspaceConfig(
             writable_repository=Path("/packages"),
@@ -250,7 +282,7 @@ context = "test"
             )
             for profile in profiles
         ]
-        self.assertEqual(len({config.workspace_fingerprint for config in configs}), 3)
+        self.assertEqual(len({config.workspace_fingerprint for config in configs}), 4)
 
     def test_resolves_explicit_spack_path_roles(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -202,7 +202,9 @@ build are handled as usual.
 
 On the first `spack-agent run` with `runner.backend = "podman"`, the runner
 automatically builds the selected toolchain image when it is not already
-available. GCC and Clang profiles use the parameterized `Containerfile.gcc`;
+available. Ubuntu GCC and Clang profiles use the parameterized
+`Containerfile.gcc`; `rocky10.2-gcc16.2` uses `Containerfile.rocky-gcc` and
+builds GCC 16.2.0 from the GNU source release on Rocky Linux 10.2.
 `Containerfile.oneapi` builds the standalone Intel oneAPI image.
 
 `runner.spack_ref` selects the Spack checkout (default: `v1.2.2`). Use a release
