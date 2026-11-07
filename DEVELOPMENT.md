@@ -310,10 +310,10 @@ software as an external package.
   names, and mock `_build_podman_image()` to assert the selected Containerfile
   and exact build arguments. Include the profile in the test that checks
   profile-specific session identity.
-5. Add the profile to the list in `spack-agent.example.toml` and to the
-  user-facing toolchain documentation in `README.md`. Ensure example specs
-  use a compiler registered in the image and valid Spack syntax, for example
-  `%gcc@16.2.0`.
+5. Add the profile to the `Profiles` list in `spack-agent.example.toml` and
+  add a row for it to the “Select one environment at a time” toolchain table
+  in `README.md`. Ensure example specs use a compiler registered in the image
+  and valid Spack syntax, for example `%gcc@16.2.0`.
 
 Run `ruff check .` and `python -m unittest discover -s tests -v` for the routine
 code checks; unit tests do not execute a Containerfile. On the first

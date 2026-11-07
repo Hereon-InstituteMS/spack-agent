@@ -289,6 +289,7 @@ Select one environment at a time using `runner.toolchain`:
 | --- | --- | --- |
 | `ubuntu24.04-gcc13` (default) | Ubuntu 24.04 | GCC/G++/GFortran 13 |
 | `ubuntu26.04-gcc15` | Ubuntu 26.04 | GCC/G++/GFortran 15 |
+| `rocky10.2-gcc16.2` | Rocky Linux 10.2 | GCC/G++/GFortran 16.2.0 |
 | `clang` | Ubuntu 24.04 | Clang 18 C/C++, GCC 13 for Fortran/runtime support |
 | `oneapi` | Intel oneAPI 2025.0.1 on Ubuntu 24.04 | `icx`, `icpx`, `ifx` |
 
@@ -296,7 +297,7 @@ Discovery uses only configured executable symlinks, not the full `PATH` or
 external-package discovery. The Clang compiler external does not establish that
 system LLVM development libraries satisfy package requirements. Match the root
 compiler constraint in `goal.spec` to the profile, for example `%gcc@15`,
-`%clang@18`, or `%oneapi`.
+`%gcc@16.2.0`, `%clang@18`, or `%oneapi`.
 The download volume remains configurable and shared by default; installed
 packages are isolated by profile. `spack_ref` applies only
 to Podman builds; the host backend uses the configured host Spack executable.
